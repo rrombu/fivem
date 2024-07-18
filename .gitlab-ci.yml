@@ -1,6 +1,4 @@
-# ------------
-# -- STAGES --
-# ------------
+# Compatible GitLab version 16.2+
 stages:
   - build
   - deploy
@@ -9,14 +7,10 @@ stages:
 variables:
   # Dry run is for builds-only mode, no uploading/deploying/notifying, helpful when experimenting with pipelines
   CFX_DRY_RUN: 'false'
-  CFX_RELEASE_BUILD: 'false'
   CFX_CLONE_ROOT: $CI_BUILDS_DIR\$CI_PROJECT_PATH_SLUG\$CI_COMMIT_REF_SLUG
 
 workflow:
   rules:
-    - if: $CI_COMMIT_BRANCH && ($CI_COMMIT_BRANCH == 'master' || $CI_COMMIT_BRANCH == 'beta' || $CI_COMMIT_BRANCH == 'production')
-      variables:
-        CFX_RELEASE_BUILD: 'true'
     # never run pipelines for tags
     - if: $CI_COMMIT_TAG
       when: never
@@ -26,25 +20,11 @@ workflow:
     # otherwise, always run pipelines
     - when: always
 
-# helper for jobs that are only meant to be run for releases
-.only_for_release:
-  rules:
-    - if: $CFX_RELEASE_BUILD == 'true'
-      when: on_success
-    - when: never
+# ▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪🔹JOB TEMPLATES🔹▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪
 
-# helper for jobs that are only meant to be run on master branch
-.only_for_master:
-  rules:
-    - if: $CFX_RELEASE_BUILD == 'true' && $CI_COMMIT_BRANCH == 'master'
-      when: on_success
-    - when: never
-
-# helper for windows builds of clients and server
 .base_build_windows:
   stage: build
-  tags:
-    - windows
+  tags: [windows]
   variables:
     # archives are heavier this way, but much faster to pack/unpack
     FF_USE_FASTZIP: "true"
@@ -52,10 +32,59 @@ workflow:
   cache:
     key: $CI_JOB_NAME--$CI_COMMIT_REF_SLUG
 
-# -------------------
-# -- CLIENT BUILDS --
-# -------------------
-.base_build_client:
+.base_build_server:
+  stage: build
+  rules:
+    - if: $CI_COMMIT_BRANCH && ($CI_COMMIT_BRANCH != 'beta' && $CI_COMMIT_BRANCH != 'production')
+      when: always
+    - when: never
+
+.base_deploy_client:
+  stage: deploy
+  tags: [windows]
+  cache:
+    key: $CI_JOB_NAME--$CI_COMMIT_REF_SLUG
+    paths:
+      - .build-cache
+  variables:
+    GIT_CLONE_PATH: $CFX_CLONE_ROOT\$CFX_PRODUCT_NAME-deploy
+  rules:
+    - if: $CFX_TARGET == 'canary' && $CI_COMMIT_BRANCH == 'master'
+      variables:
+        CFX_ENV_NAME: canary
+      when: on_success
+    - if: $CFX_TARGET == 'beta' && $CI_COMMIT_BRANCH == 'beta'
+      variables:
+        CFX_ENV_NAME: beta
+      when: on_success
+    - if: $CFX_TARGET == 'production' && $CI_COMMIT_BRANCH == 'production'
+      variables:
+        CFX_ENV_NAME: production
+      when: on_success
+    - if: $CFX_TARGET == 'specific' && $CI_COMMIT_BRANCH !~ /^(master|beta|production)$/
+      variables:
+        CFX_ENV_NAME: specific/$CI_COMMIT_BRANCH
+      when: manual
+      allow_failure: true
+    - when: never
+  script:
+    - ".\\code\\tools\\ci\\deploy_client.ps1"
+
+.base_scrt_packages:
+  stage: deploy
+  tags: [windows]
+  rules: 
+    - if: $CI_COMMIT_BRANCH == 'master' && $CI_JOB_NAME =~ /^*server*/
+      needs: ["Build server (windows)"]
+      when: on_success
+    - if: $CI_COMMIT_BRANCH == 'master' && $CI_JOB_NAME =~ /^*client*/
+      needs: ["Build client: [fivem]"]
+      when: on_success
+    - when: never
+
+# ▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️🔹BUILD🔹▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪
+
+Build client:
   extends: [.base_build_windows]
   script:
     - ".\\code\\tools\\ci\\build_client.ps1"
@@ -95,28 +124,17 @@ workflow:
       - vendor/chromium/**/*.pyc
       # V8 binaries
       - vendor/v8/**/*.dll
-
-build_client:
-  extends: [.base_build_client]
   variables:
-    GIT_CLONE_PATH: $CFX_CLONE_ROOT\fivem
-    CFX_PRODUCT_NAME: fivem
+    GIT_CLONE_PATH: $CFX_CLONE_ROOT\$CFX_PRODUCT_NAME
   tags:
-    - release_fivem
+    - release_$CFX_PRODUCT_NAME
     - windows
     - vs2022
+  parallel:
+    matrix:
+      - CFX_PRODUCT_NAME: [fivem, redm]
 
-build_client_rdr3:
-  extends: [.base_build_client]
-  variables:
-    GIT_CLONE_PATH: $CFX_CLONE_ROOT\redm
-    CFX_PRODUCT_NAME: redm
-  tags:
-    - release_redm
-    - windows
-    - vs2022
-
-build_sdk:
+Build SDK:
   stage: build
   tags:
     - release_fivem
@@ -134,23 +152,14 @@ build_sdk:
   script:
     - ".\\code\\tools\\ci\\build_sdk.ps1"
 
-# -------------------
-# -- SERVER BUILDS --
-# -------------------
-.base_build_server:
-  rules:
-    - if: $CI_COMMIT_BRANCH && ($CI_COMMIT_BRANCH != 'beta' && $CI_COMMIT_BRANCH != 'production')
-      when: always
-    - when: never
-
-build_server_windows:
+Build server (windows):
   extends: [.base_build_windows, .base_build_server]
   tags:
     - release_fxserver
     - windows
     - vs2022
   variables:
-    GIT_CLONE_PATH: $CFX_CLONE_ROOT\fxserver
+    GIT_CLONE_PATH: $CFX_CLONE_ROOT\$CFX_PRODUCT_NAME
     CFX_PRODUCT_NAME: fxserver
   script:
     - ".\\code\\tools\\ci\\build_server_windows.ps1"
@@ -162,12 +171,10 @@ build_server_windows:
   cache:
     untracked: true
 
-build_proot_linux:
+Build server (linux proot):
   extends: [.base_build_server]
-  stage: build
-  tags:
-    - linux
-  image: mcr.microsoft.com/dotnet/sdk:6.0-alpine3.15
+  tags: [linux]
+  image: mcr.microsoft.com/dotnet/sdk:6.0-alpine3.19
   variables:
     GIT_SUBMODULE_STRATEGY: normal
     GIT_SUBMODULE_DEPTH: 3
@@ -181,128 +188,40 @@ build_proot_linux:
       - fx.tar.xz
     expire_in: 1 month
 
-# -------------------
-# -- CLIENT DEPLOY --
-# -------------------
-.base_deploy_client:
-  stage: deploy
-  tags:
-    - windows
-  script:
-    - ".\\code\\tools\\ci\\deploy_client.ps1"
-  cache:
-    key: $CI_JOB_NAME--$CI_COMMIT_REF_SLUG
-    paths:
-      - .build-cache
+# ▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪🔹DEPLOY🔹▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪
 
-.base_fivem_deploy:
-  extends: [.base_deploy_client]
+Deploy FiveM:
+  extends: .base_deploy_client
+  environment:
+    name: $CFX_ENV_NAME
   variables:
-    GIT_CLONE_PATH: $CFX_CLONE_ROOT\fivem-deploy
     CFX_PRODUCT_NAME: fivem
   needs:
-    - job: build_client
-      artifacts: true
-    - job: build_sdk
-      artifacts: true
+    - "Build client: [fivem]"
+    - Build SDK
+  parallel:
+    matrix:
+      - CFX_TARGET: [canary, beta, production, specific]
 
-.base_redm_deploy:
-  extends: [.base_deploy_client]
+Deploy RedM:
+  extends: .base_deploy_client
+  environment:
+    name: $CFX_ENV_NAME
   variables:
-    GIT_CLONE_PATH: $CFX_CLONE_ROOT\redm-deploy
     CFX_PRODUCT_NAME: redm
   needs:
-    - job: build_client_rdr3
-      artifacts: true
+    - "Build client: [redm]"
+  parallel:
+    matrix:
+      - CFX_TARGET: [canary, beta, production, specific]
 
-# FiveM deployments
-fivem_deploy_canary:
-  extends: [.base_fivem_deploy]
-  environment:
-    name: canary
-  rules:
-    - if: $CFX_RELEASE_BUILD == 'true' && $CI_COMMIT_BRANCH == 'master'
-      when: on_success
-    - when: never
 
-fivem_deploy_beta:
-  extends: [.base_fivem_deploy]
-  environment:
-    name: beta
-  rules:
-    - if: $CFX_RELEASE_BUILD == 'true' && $CI_COMMIT_BRANCH == 'beta'
-      when: on_success
-    - when: never
+# ▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️🔹SCRIPT RUNTIME PACKAGES🔹▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪
 
-fivem_deploy_production:
-  extends: [.base_fivem_deploy]
-  environment:
-    name: production
-  rules:
-    - if: $CFX_RELEASE_BUILD == 'true' && $CI_COMMIT_BRANCH == 'production'
-      when: on_success
-    - when: never
-
-fivem_deploy_specific:
-  extends: [.base_fivem_deploy]
-  environment:
-    name: specific/$CI_COMMIT_BRANCH
-  rules:
-    - if: $CFX_RELEASE_BUILD == 'false' && $CI_COMMIT_BRANCH
-      when: manual
-      allow_failure: true
-    - when: never
-
-# RedM deployments
-redm_deploy_canary:
-  extends: [.base_redm_deploy]
-  environment:
-    name: canary
-  rules:
-    - if: $CFX_RELEASE_BUILD == 'true' && $CI_COMMIT_BRANCH == 'master'
-      when: on_success
-    - when: never
-
-redm_deploy_beta:
-  extends: [.base_redm_deploy]
-  environment:
-    name: beta
-  rules:
-    - if: $CFX_RELEASE_BUILD == 'true' && $CI_COMMIT_BRANCH == 'beta'
-      when: on_success
-    - when: never
-
-redm_deploy_production:
-  extends: [.base_redm_deploy]
-  environment:
-    name: production
-  rules:
-    - if: $CFX_RELEASE_BUILD == 'true' && $CI_COMMIT_BRANCH == 'production'
-      when: on_success
-    - when: never
-
-redm_deploy_specific:
-  extends: [.base_redm_deploy]
-  environment:
-    name: specific/$CI_COMMIT_BRANCH
-  rules:
-    - if: $CFX_RELEASE_BUILD == 'false' && $CI_COMMIT_BRANCH
-      when: manual
-      allow_failure: true
-    - when: never
-
-# -------------------
-# -- ScRT PACKAGES --
-# -------------------
-typings_server:
-  stage: deploy
-  extends: [.only_for_master]
-  needs:
-    - job: build_server_windows
-      artifacts: true
+typings server:
+  extends: .base_scrt_packages
+  tags: [linux]  # Overriden
   image: node:alpine
-  tags:
-    - linux
   variables:
     GIT_SUBMODULE_STRATEGY: normal
     GIT_SUBMODULE_DEPTH: 3
@@ -311,63 +230,38 @@ typings_server:
   script:
     - sh ext/typings/server/build.sh
     
-typings_client:
-  stage: deploy
-  extends: [.only_for_master]
-  needs:
-    - job: build_client
-      artifacts: true
-  tags:
-    - windows
+typings client:
+  extends: .base_scrt_packages
   script:
     - "cmd /c ext\\typings\\client\\build.bat"
     
-nuget_client:
-  stage: deploy
-  extends: [.only_for_master]
-  needs:
-    - job: build_client
-      artifacts: true
-  tags:
-    - windows
+nuget:
+  extends: .base_scrt_packages
   script:
-    - "cmd /c ext\\nuget\\client\\build.bat"
-    
-nuget_server:
-  stage: deploy
-  extends: [.only_for_master]
-  needs:
-    - job: build_server_windows
-      artifacts: true
-  tags:
-    - windows
-  script:
-    - "cmd /c ext\\nuget\\server\\build.bat"
+    - "cmd /c ext\\nuget\\$CFX_TARGET\\build.bat"
+  parallel:
+    matrix:
+      - CFX_TARGET: [client, server]
 
-# --------------------
-# -- UPLOAD REVIEWS --
-# --------------------
-.base_upload_review:
+
+# ▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️🔹REVIEWS UPLOAD🔹▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️▪️
+
+Upload review:
   stage: postdeploy
-  extends: [.only_for_release]
+  tags: [windows]
   allow_failure: true
+  rules:
+    - if: $CI_COMMIT_BRANCH =~ /^(master|beta|production)$/ && $CFX_PRODUCT_NAME == 'fivem'
+      needs: ["Build client: [fivem]"]
+      when: on_success
+    - if: $CI_COMMIT_BRANCH =~ /^(master|beta|production)$/ && $CFX_PRODUCT_NAME == 'redm'
+      needs: ["Build client: [redm]"]
+      when: on_success
+    - when: never
+  variables:
+    GIT_CLONE_PATH: $CFX_CLONE_ROOT\$CFX_PRODUCT_NAME-review
   script:
     - ".\\code\\tools\\ci\\upload_review.ps1"
-  tags:
-    - windows
-
-fivem_upload_review:
-  extends: [.base_upload_review]
-  variables:
-    GIT_CLONE_PATH: $CFX_CLONE_ROOT\fivem-review
-  needs:
-    - job: build_client
-      artifacts: true
-
-redm_upload_review:
-  extends: [.base_upload_review]
-  variables:
-    GIT_CLONE_PATH: $CFX_CLONE_ROOT\redm-review
-  needs:
-    - job: build_client_rdr3
-      artifacts: true
+  parallel:
+    matrix:
+      - CFX_PRODUCT_NAME: [fivem, redm]
