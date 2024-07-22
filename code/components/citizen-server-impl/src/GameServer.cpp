@@ -681,7 +681,7 @@ namespace fx
 
 					if (IsOneSync())
 					{
-						if (client->GetSlotId() == -1)
+						if (!client->HasSlotId())
 						{
 							SendOutOfBand(peer->GetAddress(), "error Not enough client slot IDs.");
 
@@ -729,7 +729,7 @@ namespace fx
 
 					if (wasNew)
 					{
-						gscomms_execute_callback_on_main_thread([=]()
+						gscomms_execute_callback_on_main_thread([this, client, oldNetID]()
 						{
 							m_clientRegistry->HandleConnectedClient(client, oldNetID);
 						});
@@ -877,7 +877,7 @@ namespace fx
 
 			uint8_t syncStyle = (uint8_t)m_instance->GetComponent<fx::ServerGameStatePublic>()->GetSyncStyle();
 
-			m_clientRegistry->ForAllClients([&](const fx::ClientSharedPtr& client)
+			m_clientRegistry->ForAllClients([&](fx::ClientSharedPtr client)
 			{
 				auto peer = client->GetPeer();
 
@@ -1082,10 +1082,12 @@ namespace fx
 			realReason = "Dropped.";
 		}
 
-		if (!client->SetDropping())
+		if (client->IsDropping())
 		{
 			return;
 		}
+
+		client->SetDropping();
 
 		gscomms_execute_callback_on_main_thread([this, client, realReason = std::move(realReason)]()
 		{

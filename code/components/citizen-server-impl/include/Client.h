@@ -149,6 +149,16 @@ namespace fx
 			return m_netId;
 		}
 
+		inline bool HasPreviousNetId() const
+		{
+			return m_previousNetId != 0xFFFF;
+		}
+
+		inline uint32_t GetPreviousNetId()
+		{
+			return m_previousNetId;
+		}
+
 		inline bool HasSlotId() const
 		{
 			return m_slotId != 0xFFFFFFFF;
@@ -293,13 +303,12 @@ namespace fx
 
 		inline bool IsDropping() const
 		{
-			return m_dropping.load(std::memory_order_relaxed);
+			return m_dropping;
 		}
 
-		inline bool SetDropping()
+		inline void SetDropping()
 		{
-			bool expected = false;
-			return m_dropping.compare_exchange_strong(expected, true);
+			m_dropping = true;
 		}
 
 		inline auto GetNetworkMetricsSendCallback()
@@ -389,6 +398,10 @@ namespace fx
 		// the client's netid
 		uint32_t m_netId;
 
+		// the client's previous netid
+		// needs to be stored, because scripts can still have access to it after playerConnecting and playerJoining event
+		uint32_t m_previousNetId;
+
 		// the client's slot ID
 		uint32_t m_slotId;
 
@@ -420,7 +433,7 @@ namespace fx
 		std::list<se::Principal> m_principals;
 
 		// whether the client is currently being dropped
-		std::atomic<bool> m_dropping;
+		volatile bool m_dropping;
 
 		void (*m_clientNetworkMetricsSendCallback)(Client *thisptr, int channel, const net::Buffer& buffer, NetPacketType flags);
 

@@ -89,7 +89,7 @@ namespace fx
 
 		inline void RemoveClient(const fx::ClientSharedPtr& client)
 		{
-			if (client->SetDropping())
+			if (!client->IsDropping())
 			{
 				// some code expects OnDrop to follow any OnClientCreated
 				client->OnDrop();
@@ -97,6 +97,11 @@ namespace fx
 
 			m_clientsByPeer[client->GetPeer()].reset();
 			m_clientsByNetId[client->GetNetId()].reset();
+			if (client->HasPreviousNetId())
+			{
+				m_clientsByNetId[client->GetPreviousNetId()].reset();
+			}
+
 			m_clientsByConnectionToken[client->GetConnectionToken()].reset();
 			m_clientsByConnectionTokenHash[HashString(client->GetConnectionToken().c_str())].reset();
 
@@ -270,7 +275,7 @@ namespace fx
 
 		fwEvent<const fx::ClientSharedPtr&> OnClientCreated;
 
-		fwEvent<const fx::ClientSharedPtr&> OnConnectedClient;
+		fwEvent<Client*> OnConnectedClient;
 
 		uint32_t GetAmountOfConnectedClients() { return m_amountConnectedClients; }
 
